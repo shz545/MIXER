@@ -2,9 +2,14 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax.training import train_state
+from flax.core import FrozenDict
 from dataset import load_dataset
 from utils import mixup_data
 from model import MlpMixer
+
+# 🔹 擴充 TrainState 以支援 BatchNorm
+class TrainState(train_state.TrainState):
+    batch_stats: FrozenDict
 
 # 🔹 Cross entropy loss（label smoothing）
 def cross_entropy_loss(logits, labels, smoothing=0.1):
@@ -13,10 +18,12 @@ def cross_entropy_loss(logits, labels, smoothing=0.1):
     soft_labels = one_hot * (1 - smoothing) + smoothing / num_classes
     return optax.softmax_cross_entropy(logits, soft_labels).mean()
 
-# 🔹 建立訓練狀態
+# 🔹 建立訓練狀態（初始化 BN 狀態）
 def create_train_state(rng, model, learning_rate, num_epochs=None, steps_per_epoch=None, warmup_steps=0, weight_decay=1e-2):
-    params = model.init(rng, jnp.ones([1, 32, 32, 3]), train=True)
-    schedule = None
+    print(f"🚀 Effective Warmup Steps: {warmup_steps}")
+    variables = model.init(rng, jnp.ones([1, 32, 32, 3]), train=True)
+    params = variables['params']
+    batch_stats = variables.get('batch_stats', FrozenDict())
 
     if num_epochs and steps_per_epoch:
         total_steps = num_epochs * steps_per_epoch
@@ -36,15 +43,17 @@ def create_train_state(rng, model, learning_rate, num_epochs=None, steps_per_epo
 
         tx = optax.adamw(schedule)
     else:
+        schedule = None
         tx = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
 
-    return train_state.TrainState.create(
+    return TrainState.create(
         apply_fn=model.apply,
         params=params,
-        tx=tx
+        tx=tx,
+        batch_stats=batch_stats
     ), schedule
 
-# 🔹 單步訓練（加入 MixUp）
+# 🔹 單步訓練（加入 MixUp + BN 更新）
 @jax.jit
 def train_step(state, batch, alpha=0.2, smoothing=0.1):
     imgs, labels = batch
@@ -52,33 +61,46 @@ def train_step(state, batch, alpha=0.2, smoothing=0.1):
 
     def loss_fn(params):
         dropout_rng = jax.random.fold_in(jax.random.PRNGKey(0), state.step)
-        logits = state.apply_fn(params, mixed_imgs, train=True, rngs={'dropout': dropout_rng})
+        variables = {'params': params, 'batch_stats': state.batch_stats}
+        logits, new_model_state = state.apply_fn(
+            variables,
+            mixed_imgs,
+            train=True,
+            rngs={'dropout': dropout_rng},
+            mutable=["batch_stats"]
+        )
         loss_a = cross_entropy_loss(logits, y_a, smoothing)
         loss_b = cross_entropy_loss(logits, y_b, smoothing)
-        return lam * loss_a + (1 - lam) * loss_b, logits
+        return lam * loss_a + (1 - lam) * loss_b, (logits, new_model_state)
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, logits), grads = grad_fn(state.params)
+    (loss, (logits, new_model_state)), grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
-    acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)  # 原始 labels 當作 acc 評估基準
+    state = state.replace(batch_stats=new_model_state["batch_stats"])
+    acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
     return state, {'loss': loss, 'accuracy': acc}
 
-# 🔹 驗證步驟
-def eval_step(params, batch, apply_fn, smoothing=0.1):
+# 🔹 驗證步驟（BN 推論模式）
+def eval_step(state, batch, smoothing=0.1):
     imgs, labels = batch
-    logits = apply_fn(params, imgs, train=False)
+    variables = {'params': state.params, 'batch_stats': state.batch_stats}
+    logits = state.apply_fn(variables, imgs, train=False, mutable=False)
     loss = cross_entropy_loss(logits, labels, smoothing)
     acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
     return {'loss': loss, 'accuracy': acc}
 
 # 🔹 EarlyStopping 機制
-class EarlyStopping:
-    def __init__(self, patience=5):
+class EarlyStopping :
+    def __init__(self, patience=5, enabled=True):
         self.best_loss = float('inf')
         self.counter = 0
         self.patience = patience
+        self.enabled = enabled
 
     def should_stop(self, val_loss):
+        if not self.enabled:
+            return False  # 強制不啟用 EarlyStopping
+        
         if val_loss < self.best_loss:
             self.best_loss = val_loss
             self.counter = 0

@@ -75,14 +75,16 @@ def main():
     start_time = time.time()
 
     model = MlpMixer(
-        num_classes=10,
-        num_blocks=4,
-        patch_size=4,
-        hidden_dim=64,
-        tokens_mlp_dim=128,
-        channels_mlp_dim=256,
-        dropout_rate=0.3
+    num_classes=10,
+    num_blocks=4,
+    patch_size=4,
+    hidden_dim=128,
+    tokens_mlp_dim=256,
+    channels_mlp_dim=512,
+    dropout_rate=0.15,
+    use_bn=True  # ✅ 啟用 BatchNorm
     )
+
 
     batch_size = 128
     num_epochs = 100
@@ -93,12 +95,12 @@ def main():
 
     steps_per_epoch = len(train_data)
     total_steps = num_epochs * steps_per_epoch
-    warmup_steps = min(int(0.1 * total_steps), total_steps - 1)
+    warmup_steps = min(int(0.07 * total_steps), total_steps - 1)
     weight_decay = 1e-4
 
     state, schedule = create_train_state(
         rng, model,
-        learning_rate=0.003,
+        learning_rate=0.005,
         num_epochs=num_epochs,
         steps_per_epoch=steps_per_epoch,
         warmup_steps=warmup_steps,
@@ -106,7 +108,7 @@ def main():
     )
 
     train_accs, train_losses, val_accs, val_losses, lrs = [], [], [], [], []
-    early_stopping = EarlyStopping(patience=5)
+    early_stopping = EarlyStopping(patience=5, enabled=True) # ✅ 選擇early是否開啟
 
     print("訓練開始，計時開始")
 
@@ -134,7 +136,7 @@ def main():
         # ➕ 驗證集評估
         val_loss, val_acc = 0, 0
         for batch in val_data:
-            metrics = eval_step(state.params, batch, state.apply_fn)
+            metrics = eval_step(state, batch)
             val_loss += float(metrics['loss'])
             val_acc += float(metrics['accuracy'])
         val_loss /= len(val_data)
@@ -149,7 +151,7 @@ def main():
             print(f"⛔ Early stopping triggered at epoch {epoch+1}")
             break
 
-    test_acc = evaluate(model, state.params, test_data)
+    test_acc = evaluate(model, state.params, state.batch_stats, test_data)
     print(f"\n✅ Final Test Accuracy: {test_acc:.4f}")
     print(f"總耗時: {format_duration(time.time() - start_time)}")
 

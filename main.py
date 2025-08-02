@@ -10,6 +10,7 @@ from model import MlpMixer
 from dataset import load_dataset
 from train import create_train_state, train_step
 from eval import evaluate
+from train import create_train_state, train_step, eval_step, EarlyStopping, split_dataset
 from utils import plot_metrics
 
 # CIFAR-10 類別名稱
@@ -75,8 +76,8 @@ def plot_all_metrics(train_accs, train_losses, test_accs, test_losses, lrs):
 
 def main():
     rng = jax.random.PRNGKey(0)
+    start_time = time.time()
 
-    start_time = time.time()  # ⏱️ 開始計時
     model = MlpMixer(
         num_classes=10,
         num_blocks=4,
@@ -84,42 +85,43 @@ def main():
         hidden_dim=64,
         tokens_mlp_dim=128,
         channels_mlp_dim=256,
-        dropout_rate=0.4  # 👈 Dropout 設定
+        dropout_rate=0.4
     )
 
     batch_size = 128
-    num_epochs = 10
+    num_epochs = 100
 
-    train_data = load_dataset(batch_size=batch_size, train=True)
+    full_train_data = load_dataset(batch_size=batch_size, train=True)
+    train_data, val_data = split_dataset(full_train_data, split_ratio=0.9)
     test_data = load_dataset(batch_size=batch_size, train=False)
 
     steps_per_epoch = len(train_data)
     total_steps = num_epochs * steps_per_epoch
     warmup_steps = min(int(0.1 * total_steps), total_steps - 1)
-    
     weight_decay = 1e-4
-    
+
     state, schedule = create_train_state(
-    rng, model,
-    learning_rate=0.003,
-    num_epochs=num_epochs,
-    steps_per_epoch=steps_per_epoch,
-    warmup_steps=warmup_steps,
-    weight_decay=weight_decay  # ⬅️ 加上這行
+        rng, model,
+        learning_rate=0.003,
+        num_epochs=num_epochs,
+        steps_per_epoch=steps_per_epoch,
+        warmup_steps=warmup_steps,
+        weight_decay=weight_decay
     )
 
-    train_accs, train_losses, test_accs, test_losses, lrs = [], [], [], [], []
+    train_accs, train_losses, val_accs, val_losses, lrs = [], [], [], [], []
+    early_stopping = EarlyStopping(patience=5)
+
     print("訓練開始，計時開始")
-    
+
     for epoch in range(num_epochs):
-        epoch_train_loss = 0
-        epoch_train_acc = 0
+        epoch_train_loss, epoch_train_acc = 0, 0
         batch_count = 0
         epoch_start = time.time()
+
         for batch_idx, batch in enumerate(train_data):
             state, metrics = train_step(state, batch)
             current_step = epoch * steps_per_epoch + batch_idx
-
             lr = float(schedule(current_step)) if schedule else 0.001
             lrs.append(lr)
 
@@ -133,22 +135,29 @@ def main():
         train_accs.append(epoch_train_acc / batch_count)
         train_losses.append(epoch_train_loss / batch_count)
 
-        test_loss, test_acc = evaluate_loss_and_acc(model, state.params, test_data)
-        test_accs.append(test_acc)
-        test_losses.append(test_loss)
+        # ➕ 驗證集評估
+        val_loss, val_acc = 0, 0
+        for batch in val_data:
+            metrics = eval_step(state.params, batch, state.apply_fn)
+            val_loss += float(metrics['loss'])
+            val_acc += float(metrics['accuracy'])
+        val_loss /= len(val_data)
+        val_acc /= len(val_data)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
 
-        print(f"Epoch {epoch+1} — Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}, LR: {lr:.6f}")
-        print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Acc差: {(train_accs[-1] - test_acc):.4f}")
-        
-        if train_accs[-1] - test_accs[-1] > 0.15 and test_accs[-1] < 0.85:
-            print("⚠️ 可能過度擬合：訓練集準確率遠高於測試集，請考慮減少模型複雜度或加強正則化/資料增強。")
+        print(f"Epoch {epoch+1} — Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {lr:.6f}")
+        print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Acc差: {(train_accs[-1] - val_acc):.4f}")
+
+        if early_stopping.should_stop(val_loss):
+            print(f"⛔ Early stopping triggered at epoch {epoch+1}")
+            break
 
     test_acc = evaluate(model, state.params, test_data)
     print(f"\n✅ Final Test Accuracy: {test_acc:.4f}")
-    
-    total_time = time.time() - start_time
-    print(f"總耗時: {format_duration(total_time)}")
-    plot_all_metrics(train_accs, train_losses, test_accs, test_losses, lrs)
+    print(f"總耗時: {format_duration(time.time() - start_time)}")
+
+    plot_all_metrics(train_accs, train_losses, val_accs, val_losses, lrs)
 
 if __name__ == "__main__":
     main()

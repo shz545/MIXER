@@ -3,16 +3,17 @@ import jax.numpy as jnp
 import optax
 from flax.training import train_state
 from dataset import load_dataset
+from utils import mixup_data
 from model import MlpMixer
 
-# 🔸 Cross entropy loss（加入 label smoothing）
+# 🔹 Cross entropy loss（label smoothing）
 def cross_entropy_loss(logits, labels, smoothing=0.1):
     num_classes = logits.shape[-1]
     one_hot = jax.nn.one_hot(labels, num_classes)
     soft_labels = one_hot * (1 - smoothing) + smoothing / num_classes
     return optax.softmax_cross_entropy(logits, soft_labels).mean()
 
-# 🔸 建立訓練狀態（包含學習率排程）
+# 🔹 建立訓練狀態
 def create_train_state(rng, model, learning_rate, num_epochs=None, steps_per_epoch=None, warmup_steps=0, weight_decay=1e-2):
     params = model.init(rng, jnp.ones([1, 32, 32, 3]), train=True)
     schedule = None
@@ -22,60 +23,55 @@ def create_train_state(rng, model, learning_rate, num_epochs=None, steps_per_epo
         warmup_steps = min(warmup_steps, total_steps - 1)
         decay_steps = max(1, total_steps - warmup_steps)
 
-        if warmup_steps > 0:
-            schedule = optax.warmup_cosine_decay_schedule(
-                init_value=0.0,
-                peak_value=learning_rate,
-                warmup_steps=warmup_steps,
-                decay_steps=decay_steps,
-                end_value=0.0
-            )
-        else:
-            schedule = optax.cosine_decay_schedule(
-                init_value=learning_rate,
-                decay_steps=total_steps
-            )
-        tx = optax.adamw(schedule)
+        schedule = (optax.warmup_cosine_decay_schedule(
+                        init_value=0.0,
+                        peak_value=learning_rate,
+                        warmup_steps=warmup_steps,
+                        decay_steps=decay_steps,
+                        end_value=0.0
+                    ) if warmup_steps > 0 else
+                    optax.cosine_decay_schedule(
+                        init_value=learning_rate,
+                        decay_steps=total_steps))
 
-        print("📊 Learning rate schedule preview:")
-        for i in range(0, min(20, total_steps), max(1, total_steps // 20)):
-            print(f"Step {i}: lr = {float(schedule(i)):.6f}")
+        tx = optax.adamw(schedule)
     else:
         tx = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
 
-    state = train_state.TrainState.create(
+    return train_state.TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=tx
-    )
-    return state, schedule
+    ), schedule
 
-# 🔸 單步訓練
+# 🔹 單步訓練（加入 MixUp）
 @jax.jit
-def train_step(state, batch):
+def train_step(state, batch, alpha=0.2, smoothing=0.1):
     imgs, labels = batch
+    mixed_imgs, y_a, y_b, lam = mixup_data(imgs, labels, alpha)
 
     def loss_fn(params):
         dropout_rng = jax.random.fold_in(jax.random.PRNGKey(0), state.step)
-        logits = state.apply_fn(params, imgs, train=True, rngs={'dropout': dropout_rng})
-        loss = cross_entropy_loss(logits, labels)
-        return loss, logits
+        logits = state.apply_fn(params, mixed_imgs, train=True, rngs={'dropout': dropout_rng})
+        loss_a = cross_entropy_loss(logits, y_a, smoothing)
+        loss_b = cross_entropy_loss(logits, y_b, smoothing)
+        return lam * loss_a + (1 - lam) * loss_b, logits
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
     (loss, logits), grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
-    accuracy = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
-    return state, {'loss': loss, 'accuracy': accuracy}
+    acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)  # 原始 labels 當作 acc 評估基準
+    return state, {'loss': loss, 'accuracy': acc}
 
-# 🔸 驗證步驟（不使用 JIT，避免 apply_fn 錯誤）
-def eval_step(params, batch, apply_fn):
+# 🔹 驗證步驟
+def eval_step(params, batch, apply_fn, smoothing=0.1):
     imgs, labels = batch
-    logits = apply_fn(params, imgs, train=False)  # ✅ 完整修正
-    loss = cross_entropy_loss(logits, labels)
-    accuracy = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
-    return {'loss': loss, 'accuracy': accuracy}
+    logits = apply_fn(params, imgs, train=False)
+    loss = cross_entropy_loss(logits, labels, smoothing)
+    acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
+    return {'loss': loss, 'accuracy': acc}
 
-# 🔸 EarlyStopping 機制
+# 🔹 EarlyStopping 機制
 class EarlyStopping:
     def __init__(self, patience=5):
         self.best_loss = float('inf')
@@ -90,7 +86,7 @@ class EarlyStopping:
             self.counter += 1
         return self.counter >= self.patience
 
-# 🔸 Train / Val 分割
+# 🔹 資料集分割
 def split_dataset(data, split_ratio=0.9):
     split_idx = int(len(data) * split_ratio)
     return data[:split_idx], data[split_idx:]

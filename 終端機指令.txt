@@ -1,5 +1,7 @@
 增加release： 
-gh release create vX *.py -n " " --latest
+gh release create v9 *.py --notes-file notes.txt --latest 
+git commit -m "完成合併並解決衝突"
+git push origin main
 --------------------------------------------------------------------------------------------------
 Usage:  gh release create [<tag>] [<filename>... | <pattern>...]
 

@@ -11,7 +11,6 @@ from dataset import load_dataset
 from train import create_train_state, train_step
 from eval import evaluate
 from train import create_train_state, train_step, eval_step, EarlyStopping, split_dataset
-from utils import plot_metrics
 
 # CIFAR-10 類別名稱
 classes = ['airplane', 'automobile', 'bird', 'cat', 'deer',
@@ -20,9 +19,6 @@ classes = ['airplane', 'automobile', 'bird', 'cat', 'deer',
 def format_duration(seconds):
     mins, secs = divmod(int(seconds), 60)
     return f"{mins} 分 {secs} 秒"
-
-def preprocess(image):
-    return jnp.array(image, dtype=jnp.float32) / 255.0
 
 def visualize_prediction(image, pred_class, true_class):
     plt.imshow(image.astype(np.float32))
@@ -44,20 +40,20 @@ def evaluate_loss_and_acc(model, params, data):
         total_count += imgs.shape[0]
     return total_loss / total_count, total_acc / total_count
 
-def plot_all_metrics(train_accs, train_losses, test_accs, test_losses, lrs):
+def plot_all_metrics(train_accs, train_losses, Val_accs, Val_losses, lrs):
     epochs = range(1, len(train_accs) + 1)
     fig, ax1 = plt.subplots(figsize=(10,6))
 
     ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Accuracy', color='tab:blue')
     l1, = ax1.plot(epochs, train_accs, label='Train Accuracy', color='tab:blue', linestyle='-')
-    l2, = ax1.plot(epochs, test_accs, label='Test Accuracy', color='tab:blue', linestyle='--')
+    l2, = ax1.plot(epochs, Val_accs, label='Val Accuracy', color='tab:blue', linestyle='--')
     ax1.tick_params(axis='y', labelcolor='tab:blue')
 
     ax2 = ax1.twinx()
     ax2.set_ylabel('Loss', color='tab:red')
     l3, = ax2.plot(epochs, train_losses, label='Train Loss', color='tab:red', linestyle='-')
-    l4, = ax2.plot(epochs, test_losses, label='Test Loss', color='tab:red', linestyle='--')
+    l4, = ax2.plot(epochs, Val_losses, label='Val Loss', color='tab:red', linestyle='--')
     ax2.tick_params(axis='y', labelcolor='tab:red')
 
     ax3 = ax1.twinx()
@@ -70,7 +66,7 @@ def plot_all_metrics(train_accs, train_losses, test_accs, test_losses, lrs):
     labels = [line.get_label() for line in lines]
     ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, 1.15), ncol=3)
 
-    plt.title('Training/Test Accuracy, Loss and Learning Rate')
+    plt.title('Training/Val Accuracy, Loss and Learning Rate')
     fig.tight_layout()
     plt.show()
 
@@ -85,7 +81,7 @@ def main():
         hidden_dim=64,
         tokens_mlp_dim=128,
         channels_mlp_dim=256,
-        dropout_rate=0.4
+        dropout_rate=0.3
     )
 
     batch_size = 128
@@ -147,7 +143,7 @@ def main():
         val_accs.append(val_acc)
 
         print(f"Epoch {epoch+1} — Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {lr:.6f}")
-        print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Acc差: {(train_accs[-1] - val_acc):.4f}")
+        print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Train_Acc多: {(train_accs[-1] - val_acc):.4f}")
 
         if early_stopping.should_stop(val_loss):
             print(f"⛔ Early stopping triggered at epoch {epoch+1}")

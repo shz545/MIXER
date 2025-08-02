@@ -1,5 +1,6 @@
 增加release： 
-gh release create v9 *.py --notes-file notes.txt --latest 
+gh release create v *.py --notes-file notes.txt --latest 
+git add .
 git commit -m "完成合併並解決衝突"
 git push origin main
 --------------------------------------------------------------------------------------------------

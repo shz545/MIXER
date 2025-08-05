@@ -1,10 +1,5 @@
 change：
-可選擇early_stop是否開啟
 
 修改檔案：
-eval
-main
-train
 
 可優化/錯誤：
-學習率上不去

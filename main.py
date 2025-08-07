@@ -1,8 +1,8 @@
+#main.py --dataset c10 --model mlp_mixer --autoaugment --cutmix-prob 0.5
 import argparse  # 處理命令列參數
 import torch     # PyTorch 主框架
 import wandb     # 用來追蹤與視覺化訓練過程
 wandb.login()    # 登入 wandb 帳號，初始化追蹤功能
-
 
 from dataloader import get_dataloaders
 from utils import get_model
@@ -11,7 +11,7 @@ from train import Trainer
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', required=True, choices=['c10'])
 parser.add_argument('--model', required=True, choices=['mlp_mixer'])
-parser.add_argument('--batch-size', type=int, default=128)           # 訓練批次大小
+parser.add_argument('--batch-size', type=int, default=128)           # 訓練批次大小 
 parser.add_argument('--eval-batch-size', type=int, default=1024)     # 評估批次大小
 parser.add_argument('--num-workers', type=int, default=4)            # dataloader 的子進程數量
 parser.add_argument('--seed', type=int, default=3407)                # 隨機種子（確保可重現）
@@ -21,13 +21,13 @@ parser.add_argument('--epochs', type=int, default=300)               # 總訓練
 parser.add_argument('--patch-size', type=int, default=4) # patch 大小
 parser.add_argument('--hidden-size', type=int, default=128) # 隱藏層大小
 parser.add_argument('--hidden-c', type=int, default=512) #channel-mixing 隱藏層大小
-parser.add_argument('--hidden-s', type=int, default=256) #token-mixing 隱藏層大小
-parser.add_argument('--num-layers', type=int, default=6) # Mixer 層數
+parser.add_argument('--hidden-s', type=int, default=64) #token-mixing 隱藏層大小
+parser.add_argument('--num-layers', type=int, default=8) # Mixer 層數
 parser.add_argument('--drop-p', type=int, default=0.) # dropout 機率
 parser.add_argument('--off-act', action='store_true', help='Disable activation function') # 是否關閉激活函數
 parser.add_argument('--is-cls-token', action='store_true', help='Introduce a class token.') # 是否使用 cls token
 
-parser.add_argument('--lr', type=float, default=3e-3)                # 初始學習率
+parser.add_argument('--lr', type=float, default=1e-3)                # 初始學習率
 parser.add_argument('--min-lr', type=float, default=1e-5)            # 最小學習率（給 scheduler 用）
 parser.add_argument('--momentum', type=float, default=0.9)           # Momentum（給 SGD 用）
 parser.add_argument('--optimizer', default='adam', choices=['adam', 'sgd'])  # 使用的 optimizer

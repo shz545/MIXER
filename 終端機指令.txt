@@ -1,5 +1,6 @@
+source ~/venvs/jaxenv/bin/activate
 增加release： 
-gh release create v *.py --notes-file notes.txt --latest 
+gh release create v *.py --notes-file notes.txt --latest
 git add .
 git commit -m "完成合併並解決衝突"
 git push origin main
@@ -22,5 +23,5 @@ Flags:
       --verify-tag                   Abort in case the git tag doesn't already exist in the remote repository
 ---------------------------------------------------------------------------------------------------------------------------
 
-classes = [str(i) for i in range(100)]  # MNIST 是 0~9 的數字
+classes = [str(i) for i in range(10)]  # MNIST 是 0~9 的數字
 classes = ['airplane', 'automobile', 'bird', 'cat', 'deer','dog', 'frog', 'horse', 'ship', 'truck']

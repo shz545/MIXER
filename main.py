@@ -1,161 +1,70 @@
-import jax
-import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import numpy as np
-import optax
-import time
+#main.py --dataset c10 --model mlp_mixer --autoaugment --cutmix-prob 0.5
+import argparse  # 處理命令列參數
+import torch     # PyTorch 主框架
+import wandb     # 用來追蹤與視覺化訓練過程
+wandb.login()    # 登入 wandb 帳號，初始化追蹤功能
 
-# 模組載入
-from model import MlpMixer
-from dataset import load_dataset
-from train import create_train_state, train_step
-from eval import evaluate
-from train import create_train_state, train_step, eval_step, EarlyStopping, split_dataset
+from dataloader import get_dataloaders
+from utils import get_model
+from train import Trainer
 
-# CIFAR-10 類別名稱
-classes = ['airplane', 'automobile', 'bird', 'cat', 'deer',
-           'dog', 'frog', 'horse', 'ship', 'truck']
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', required=True, choices=['c10'])
+parser.add_argument('--model', required=True, choices=['mlp_mixer'])
+parser.add_argument('--batch-size', type=int, default=128)           # 訓練批次大小 
+parser.add_argument('--eval-batch-size', type=int, default=1024)     # 評估批次大小
+parser.add_argument('--num-workers', type=int, default=4)            # dataloader 的子進程數量
+parser.add_argument('--seed', type=int, default=3407)                # 隨機種子（確保可重現）
+parser.add_argument('--epochs', type=int, default=300)               # 總訓練 epoch 數
+# parser.add_argument('--precision', type=int, default=16)
 
-def format_duration(seconds):
-    mins, secs = divmod(int(seconds), 60)
-    return f"{mins} 分 {secs} 秒"
+parser.add_argument('--patch-size', type=int, default=4) # patch 大小
+parser.add_argument('--hidden-size', type=int, default=128) # 隱藏層大小
+parser.add_argument('--hidden-c', type=int, default=512) #channel-mixing 隱藏層大小
+parser.add_argument('--hidden-s', type=int, default=64) #token-mixing 隱藏層大小
+parser.add_argument('--num-layers', type=int, default=8) # Mixer 層數
+parser.add_argument('--drop-p', type=int, default=0.) # dropout 機率
+parser.add_argument('--off-act', action='store_true', help='Disable activation function') # 是否關閉激活函數
+parser.add_argument('--is-cls-token', action='store_true', help='Introduce a class token.') # 是否使用 cls token
 
-def visualize_prediction(image, pred_class, true_class):
-    plt.imshow(image.astype(np.float32))
-    plt.title(f"Prediction: {classes[pred_class]}\nGround Truth: {classes[true_class]}")
-    plt.axis('off')
-    plt.show()
+parser.add_argument('--lr', type=float, default=1e-3)                # 初始學習率
+parser.add_argument('--min-lr', type=float, default=1e-5)            # 最小學習率（給 scheduler 用）
+parser.add_argument('--momentum', type=float, default=0.9)           # Momentum（給 SGD 用）
+parser.add_argument('--optimizer', default='adam', choices=['adam', 'sgd'])  # 使用的 optimizer
+parser.add_argument('--scheduler', default='cosine', choices=['step', 'cosine'])  # 學習率排程器
+parser.add_argument('--beta1', type=float, default=0.9)              # Adam β₁ 參數
+parser.add_argument('--beta2', type=float, default=0.99)             # Adam β₂ 參數
+parser.add_argument('--weight-decay', type=float, default=5e-5)      # 權重衰減（L2 regularization）
+parser.add_argument('--off-nesterov', action='store_true')          # 是否關閉 Nesterov（SGD 專用）
+parser.add_argument('--label-smoothing', type=float, default=0.1)   # label smoothing 系數
+parser.add_argument('--gamma', type=float, default=0.1)             # learning rate step decay 的 gamma
+parser.add_argument('--warmup-epoch', type=int, default=5)          # warmup epoch 數
+parser.add_argument('--autoaugment', action='store_true')           # 是否使用 AutoAugment
+parser.add_argument('--clip-grad', type=float, default=0, help="0 means disabling clip-grad") # 梯度裁剪
+parser.add_argument('--cutmix-beta', type=float, default=1.0)       # CutMix 的 beta 值
+parser.add_argument('--cutmix-prob', type=float, default=0.)        # 使用 CutMix 的機率
 
-def evaluate_loss_and_acc(model, params, data):
-    total_loss = 0
-    total_acc = 0
-    total_count = 0
-    for imgs, labels in data:
-        logits = model.apply(params, imgs, train=False)
-        preds = jnp.argmax(logits, axis=-1)
-        acc = jnp.sum(preds == labels)
-        loss = jnp.mean(optax.softmax_cross_entropy(logits, jax.nn.one_hot(labels, num_classes=10)))
-        total_loss += float(loss) * imgs.shape[0]
-        total_acc += float(acc)
-        total_count += imgs.shape[0]
-    return total_loss / total_count, total_acc / total_count
+args = parser.parse_args()
+args.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu') #使用gpu,cpu
+args.nesterov = not args.off_nesterov
+torch.random.manual_seed(args.seed)
 
-def plot_all_metrics(train_accs, train_losses, Val_accs, Val_losses, lrs):
-    epochs = range(1, len(train_accs) + 1)
-    fig, ax1 = plt.subplots(figsize=(10,6))
+#取名
+experiment_name = f"{args.model}_{args.dataset}_{args.optimizer}_{args.scheduler}"
+if args.autoaugment:
+    experiment_name += "_aa"
+if args.clip_grad:
+    experiment_name += f"_cg{args.clip_grad}"
+if args.off_act:
+    experiment_name += f"_noact"
+if args.cutmix_prob>0.:
+    experiment_name += f'_cm'
+if args.is_cls_token:
+    experiment_name += f"_cls"
 
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Accuracy', color='tab:blue')
-    l1, = ax1.plot(epochs, train_accs, label='Train Accuracy', color='tab:blue', linestyle='-')
-    l2, = ax1.plot(epochs, Val_accs, label='Val Accuracy', color='tab:blue', linestyle='--')
-    ax1.tick_params(axis='y', labelcolor='tab:blue')
-
-    ax2 = ax1.twinx()
-    ax2.set_ylabel('Loss', color='tab:red')
-    l3, = ax2.plot(epochs, train_losses, label='Train Loss', color='tab:red', linestyle='-')
-    l4, = ax2.plot(epochs, Val_losses, label='Val Loss', color='tab:red', linestyle='--')
-    ax2.tick_params(axis='y', labelcolor='tab:red')
-
-    ax3 = ax1.twinx()
-    ax3.spines['right'].set_position(('outward', 60))
-    ax3.set_ylabel('Learning Rate', color='tab:green')
-    l5, = ax3.plot(np.linspace(1, len(train_accs), len(lrs)), lrs, label='Learning Rate', color='tab:green', alpha=0.3)
-    ax3.tick_params(axis='y', labelcolor='tab:green')
-
-    lines = [l1, l2, l3, l4, l5]
-    labels = [line.get_label() for line in lines]
-    ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, 1.15), ncol=3)
-
-    plt.title('Training/Val Accuracy, Loss and Learning Rate')
-    fig.tight_layout()
-    plt.show()
-
-def main():
-    rng = jax.random.PRNGKey(0)
-    start_time = time.time()
-
-    model = MlpMixer(
-    num_classes=10,
-    num_blocks=4,
-    patch_size=4,
-    hidden_dim=128,
-    tokens_mlp_dim=256,
-    channels_mlp_dim=512,
-    dropout_rate=0.15,
-    use_bn=True  # ✅ 啟用 BatchNorm
-    )
-
-
-    batch_size = 128
-    num_epochs = 100
-
-    full_train_data = load_dataset(batch_size=batch_size, train=True)
-    train_data, val_data = split_dataset(full_train_data, split_ratio=0.9)
-    test_data = load_dataset(batch_size=batch_size, train=False)
-
-    steps_per_epoch = len(train_data)
-    total_steps = num_epochs * steps_per_epoch
-    warmup_steps = min(int(0.07 * total_steps), total_steps - 1)
-    weight_decay = 1e-4
-
-    state, schedule = create_train_state(
-        rng, model,
-        learning_rate=0.005,
-        num_epochs=num_epochs,
-        steps_per_epoch=steps_per_epoch,
-        warmup_steps=warmup_steps,
-        weight_decay=weight_decay
-    )
-
-    train_accs, train_losses, val_accs, val_losses, lrs = [], [], [], [], []
-    early_stopping = EarlyStopping(patience=5, enabled=True) # ✅ 選擇early是否開啟
-
-    print("訓練開始，計時開始")
-
-    for epoch in range(num_epochs):
-        epoch_train_loss, epoch_train_acc = 0, 0
-        batch_count = 0
-        epoch_start = time.time()
-
-        for batch_idx, batch in enumerate(train_data):
-            state, metrics = train_step(state, batch)
-            current_step = epoch * steps_per_epoch + batch_idx
-            lr = float(schedule(current_step)) if schedule else 0.001
-            lrs.append(lr)
-
-            epoch_train_loss += float(metrics['loss'])
-            epoch_train_acc += float(metrics['accuracy'])
-            batch_count += 1
-
-            if epoch == 0 and batch_idx < 10:
-                print(f"Step {current_step}, LR: {lr:.6f}")
-
-        train_accs.append(epoch_train_acc / batch_count)
-        train_losses.append(epoch_train_loss / batch_count)
-
-        # ➕ 驗證集評估
-        val_loss, val_acc = 0, 0
-        for batch in val_data:
-            metrics = eval_step(state, batch)
-            val_loss += float(metrics['loss'])
-            val_acc += float(metrics['accuracy'])
-        val_loss /= len(val_data)
-        val_acc /= len(val_data)
-        val_losses.append(val_loss)
-        val_accs.append(val_acc)
-
-        print(f"Epoch {epoch+1} — Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {lr:.6f}")
-        print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Train_Acc多: {(train_accs[-1] - val_acc):.4f}")
-
-        if early_stopping.should_stop(val_loss):
-            print(f"⛔ Early stopping triggered at epoch {epoch+1}")
-            break
-
-    test_acc = evaluate(model, state.params, state.batch_stats, test_data)
-    print(f"\n✅ Final Test Accuracy: {test_acc:.4f}")
-    print(f"總耗時: {format_duration(time.time() - start_time)}")
-
-    plot_all_metrics(train_accs, train_losses, val_accs, val_losses, lrs)
-
-if __name__ == "__main__":
-    main()
+if __name__=='__main__':
+    with wandb.init(project='mlp_mixer', config=args, name=experiment_name):
+        train_dl, test_dl = get_dataloaders(args)
+        model = get_model(args)
+        trainer = Trainer(model, args)
+        trainer.fit(train_dl, test_dl)

@@ -1,15 +1,41 @@
 import numpy as np
 
-def mixup_data(x, y, alpha=0.2):
-    """MixUp input and label"""
-    if alpha > 0:
-        lam = np.random.beta(alpha, alpha)
+def get_model(args): #將參數匯入MLPMixer
+    model = None
+    if args.model=='mlp_mixer':
+        from mlp_mixer import MLPMixer
+        model = MLPMixer(
+            in_channels=3,
+            img_size=args.size,
+            hidden_size=args.hidden_size,
+            patch_size = args.patch_size,
+            hidden_c = args.hidden_c,
+            hidden_s = args.hidden_s,
+            num_layers = args.num_layers,
+            num_classes=args.num_classes,
+            drop_p=args.drop_p,
+            off_act=args.off_act,
+            is_cls_token=args.is_cls_token
+        )
     else:
-        lam = 1
+        raise ValueError(f"No such model: {args.model}")
 
-    batch_size = x.shape[0]
-    index = np.random.permutation(batch_size)
+    return model.to(args.device)
 
-    mixed_x = lam * x + (1 - lam) * x[index]
-    y_a, y_b = y, y[index]
-    return mixed_x, y_a, y_b, lam
+def rand_bbox(size, lam):
+    W = size[2]
+    H = size[3]
+    cut_rat = np.sqrt(1. - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+
+    # uniform
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2

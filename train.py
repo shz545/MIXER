@@ -1,114 +1,130 @@
-import jax
-import jax.numpy as jnp
-import optax
-from flax.training import train_state
-from flax.core import FrozenDict
-from dataset import load_dataset
-from utils import mixup_data
-from model import MlpMixer
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import wandb
+import warmup_scheduler
+import numpy as np
 
-# 🔹 擴充 TrainState 以支援 BatchNorm
-class TrainState(train_state.TrainState):
-    batch_stats: FrozenDict
+from utils import rand_bbox
+from torch.amp import autocast, GradScaler  # ✅ 改用 torch.amp
 
-# 🔹 Cross entropy loss（label smoothing）
-def cross_entropy_loss(logits, labels, smoothing=0.1):
-    num_classes = logits.shape[-1]
-    one_hot = jax.nn.one_hot(labels, num_classes)
-    soft_labels = one_hot * (1 - smoothing) + smoothing / num_classes
-    return optax.softmax_cross_entropy(logits, soft_labels).mean()
+class Trainer(object):
+    def __init__(self, model, args):
+        wandb.config.update(args)
+        self.device = args.device
+        self.clip_grad = args.clip_grad
+        self.cutmix_beta = args.cutmix_beta
+        self.cutmix_prob = args.cutmix_prob
+        self.model = model
 
-# 🔹 建立訓練狀態（初始化 BN 狀態）
-def create_train_state(rng, model, learning_rate, num_epochs=None, steps_per_epoch=None, warmup_steps=0, weight_decay=1e-2):
-    print(f"🚀 Effective Warmup Steps: {warmup_steps}")
-    variables = model.init(rng, jnp.ones([1, 32, 32, 3]), train=True)
-    params = variables['params']
-    batch_stats = variables.get('batch_stats', FrozenDict())
-
-    if num_epochs and steps_per_epoch:
-        total_steps = num_epochs * steps_per_epoch
-        warmup_steps = min(warmup_steps, total_steps - 1)
-        decay_steps = max(1, total_steps - warmup_steps)
-
-        schedule = (optax.warmup_cosine_decay_schedule(
-                        init_value=0.0,
-                        peak_value=learning_rate,
-                        warmup_steps=warmup_steps,
-                        decay_steps=decay_steps,
-                        end_value=0.0
-                    ) if warmup_steps > 0 else
-                    optax.cosine_decay_schedule(
-                        init_value=learning_rate,
-                        decay_steps=total_steps))
-
-        tx = optax.adamw(schedule)
-    else:
-        schedule = None
-        tx = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
-
-    return TrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=tx,
-        batch_stats=batch_stats
-    ), schedule
-
-# 🔹 單步訓練（加入 MixUp + BN 更新）
-@jax.jit
-def train_step(state, batch, alpha=0.2, smoothing=0.1):
-    imgs, labels = batch
-    mixed_imgs, y_a, y_b, lam = mixup_data(imgs, labels, alpha)
-
-    def loss_fn(params):
-        dropout_rng = jax.random.fold_in(jax.random.PRNGKey(0), state.step)
-        variables = {'params': params, 'batch_stats': state.batch_stats}
-        logits, new_model_state = state.apply_fn(
-            variables,
-            mixed_imgs,
-            train=True,
-            rngs={'dropout': dropout_rng},
-            mutable=["batch_stats"]
-        )
-        loss_a = cross_entropy_loss(logits, y_a, smoothing)
-        loss_b = cross_entropy_loss(logits, y_b, smoothing)
-        return lam * loss_a + (1 - lam) * loss_b, (logits, new_model_state)
-
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (loss, (logits, new_model_state)), grads = grad_fn(state.params)
-    state = state.apply_gradients(grads=grads)
-    state = state.replace(batch_stats=new_model_state["batch_stats"])
-    acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
-    return state, {'loss': loss, 'accuracy': acc}
-
-# 🔹 驗證步驟（BN 推論模式）
-def eval_step(state, batch, smoothing=0.1):
-    imgs, labels = batch
-    variables = {'params': state.params, 'batch_stats': state.batch_stats}
-    logits = state.apply_fn(variables, imgs, train=False, mutable=False)
-    loss = cross_entropy_loss(logits, labels, smoothing)
-    acc = jnp.mean(jnp.argmax(logits, axis=-1) == labels)
-    return {'loss': loss, 'accuracy': acc}
-
-# 🔹 EarlyStopping 機制
-class EarlyStopping :
-    def __init__(self, patience=5, enabled=True):
-        self.best_loss = float('inf')
-        self.counter = 0
-        self.patience = patience
-        self.enabled = enabled
-
-    def should_stop(self, val_loss):
-        if not self.enabled:
-            return False  # 強制不啟用 EarlyStopping
-        
-        if val_loss < self.best_loss:
-            self.best_loss = val_loss
-            self.counter = 0
+        if args.optimizer == 'sgd':
+            self.optimizer = optim.SGD(
+                self.model.parameters(), lr=args.lr,
+                momentum=args.momentum, weight_decay=args.weight_decay,
+                nesterov=args.nesterov
+            )
+        elif args.optimizer == 'adam':
+            self.optimizer = optim.Adam(
+                self.model.parameters(), lr=args.lr,
+                betas=(args.beta1, args.beta2), weight_decay=args.weight_decay
+            )
         else:
-            self.counter += 1
-        return self.counter >= self.patience
+            raise ValueError(f"No such optimizer: {args.optimizer}")
 
-# 🔹 資料集分割
-def split_dataset(data, split_ratio=0.9):
-    split_idx = int(len(data) * split_ratio)
-    return data[:split_idx], data[split_idx:]
+        if args.scheduler == 'step':
+            self.base_scheduler = optim.lr_scheduler.MultiStepLR(
+                self.optimizer, milestones=[args.epochs // 2, 3 * args.epochs // 4],
+                gamma=args.gamma
+            )
+        elif args.scheduler == 'cosine':
+            self.base_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer, T_max=args.epochs, eta_min=args.min_lr
+            )
+        else:
+            raise ValueError(f"No such scheduler: {args.scheduler}")
+
+        if args.warmup_epoch:
+            self.scheduler = warmup_scheduler.GradualWarmupScheduler(
+                self.optimizer, multiplier=1., total_epoch=args.warmup_epoch,
+                after_scheduler=self.base_scheduler
+            )
+        else:
+            self.scheduler = self.base_scheduler
+
+        self.scaler = GradScaler('cuda')  # ✅ 新寫法
+        self.epochs = args.epochs
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+        self.num_steps = 0
+        self.epoch_loss, self.epoch_corr, self.epoch_acc = 0., 0., 0.
+
+    def _train_one_step(self, batch):
+        self.model.train()
+        img, label = batch
+        self.num_steps += 1
+        img, label = img.to(self.device), label.to(self.device)
+
+        self.optimizer.zero_grad()
+        r = np.random.rand(1)
+        if self.cutmix_beta > 0 and r < self.cutmix_prob:
+            lam = np.random.beta(self.cutmix_beta, self.cutmix_beta)
+            rand_index = torch.randperm(img.size(0)).to(self.device)
+            target_a = label
+            target_b = label[rand_index]
+            bbx1, bby1, bbx2, bby2 = rand_bbox(img.size(), lam)
+            img[:, :, bbx1:bbx2, bby1:bby2] = img[rand_index, :, bbx1:bbx2, bby1:bby2]
+            lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (img.size(-1) * img.size(-2)))
+
+            with autocast('cuda'):
+                out = self.model(img)
+                loss = self.criterion(out, target_a) * lam + self.criterion(out, target_b) * (1. - lam)
+        else:
+            with autocast('cuda'):
+                out = self.model(img)
+                loss = self.criterion(out, label)
+
+        self.scaler.scale(loss).backward()
+        if self.clip_grad:
+            nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
+        acc = out.argmax(dim=-1).eq(label).sum(-1) / img.size(0)
+        wandb.log({'loss': loss, 'acc': acc}, step=self.num_steps)
+
+    def _test_one_step(self, batch):
+        self.model.eval()
+        img, label = batch
+        img, label = img.to(self.device), label.to(self.device)
+
+        with torch.no_grad():
+            out = self.model(img)
+            loss = self.criterion(out, label)
+
+        self.epoch_loss += loss * img.size(0)
+        self.epoch_corr += out.argmax(dim=-1).eq(label).sum(-1)
+
+    def fit(self, train_dl, test_dl):
+        for epoch in range(1, self.epochs + 1):
+            for batch in train_dl:
+                self._train_one_step(batch)
+
+            wandb.log({
+                'epoch': epoch,
+                'lr': self.optimizer.param_groups[0]["lr"]
+            }, step=self.num_steps)
+
+            self.scheduler.step()
+
+            num_imgs = 0.
+            self.epoch_loss, self.epoch_corr, self.epoch_acc = 0., 0., 0.
+            for batch in test_dl:
+                self._test_one_step(batch)
+                num_imgs += batch[0].size(0)
+
+            self.epoch_loss /= num_imgs
+            self.epoch_acc = self.epoch_corr / num_imgs
+            wandb.log({
+                'val_loss': self.epoch_loss,
+                'val_acc': self.epoch_acc
+            }, step=self.num_steps)

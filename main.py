@@ -35,7 +35,7 @@ def main():
         train_with_config(default_config, num_epochs=num_epochs, batch_size=batch_size, earlystop=earlystop, dataset_name=dataset_name, optimizer=optimizer)
 
     elif mode == "gga":
-        best_config = run_gga(pop_size=2, generations=1, dataset_name=dataset_name, optimizer=optimizer) #pop_size 個體數(需>=2) , generations 世代數
+        best_config = run_gga(pop_size=pop_size, generations=generations, dataset_name=dataset_name, optimizer=optimizer) #pop_size 個體數(需>=2) , generations 世代數
 
         if trainornot == "y":
             print("\n🎯 使用最佳參數進行完整訓練")

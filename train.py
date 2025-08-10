@@ -201,7 +201,7 @@ def fitness(chromosome, rng):
     )
 
     batch_size = 128
-    num_epochs = 12
+    num_epochs = 10
     full_train_data = load_dataset(batch_size=batch_size, train=True)
     train_data, val_data = split_dataset(full_train_data, split_ratio=0.9)
     steps_per_epoch = len(train_data)

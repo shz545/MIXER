@@ -37,7 +37,7 @@ def train_with_config(config, dataset_name="cifar10"):
     )
 
     batch_size = 128
-    num_epochs = 250
+    num_epochs = 150
 
     full_train_data = load_dataset(batch_size=batch_size, train=True, dataset_name=dataset_name)
     train_data, val_data = split_dataset(full_train_data, split_ratio=0.9)
@@ -109,11 +109,11 @@ def train_with_config(config, dataset_name="cifar10"):
 
         print(f"Epoch {epoch+1} — Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {lr:.6f}")
         print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Train_Acc多: {(train_accs[-1] - val_acc):.4f}")
-        '''
-        if early_stopping.should_stop(val_loss):
-            print(f"⛔ Early stopping triggered at epoch {epoch+1}")
-            break
-        '''
+
+        #if early_stopping.should_stop(val_loss):
+        #    print(f"⛔ Early stopping triggered at epoch {epoch+1}")
+        #    break
+
     acc_list = [
     jnp.mean(jnp.argmax(model.apply({'params': state.params, 'batch_stats': state.batch_stats}, imgs, train=False), axis=-1) == labels)
     for imgs, labels in test_data

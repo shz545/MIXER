@@ -1,6 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+def format_duration(seconds):
+    mins, secs = divmod(int(seconds), 60)
+    return f"{mins} 分 {secs} 秒"
+
 def cutmix_data(x, y, alpha=1.0):
     """CutMix augmentation"""
     batch_size, h, w, c = x.shape

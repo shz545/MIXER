@@ -4,15 +4,18 @@ import numpy as np
 import jax.lax as lax
 import optax
 import time
+import random
+import os
+import matplotlib.pyplot as plt
 from flax.training import train_state
 from flax.training.train_state import TrainState
 from flax.core import FrozenDict
 from dataset import load_dataset
-from utils import cutmix_data
+from utils import cutmix_data,format_duration,plot_all_metrics
 from tqdm import tqdm  # 放在檔案最上方
 from model import MlpMixer
 
-import random
+fitness_cache = {}
 
 # 🔹 染色體結構
 def sample_chromosome():
@@ -22,8 +25,8 @@ def sample_chromosome():
         "hidden_dim": random.choice([16, 32, 64, 128, 256]),
         "tokens_mlp_dim": random.choice([32, 64, 128, 256, 512]),
         "channels_mlp_dim": random.choice([32, 64, 128, 256, 512]),
-        "dropout_rate": random.uniform(0.0, 0.5),
-        "learning_rate": random.uniform(5e-4, 5e-2),
+        "dropout_rate": round(np.random.uniform(0.0, 0.5), 1),
+        "learning_rate": round(np.random.uniform(5e-4, 5e-2), 4),
         "use_bn": random.choice([True])
     }
 
@@ -37,6 +40,33 @@ def crossover(parent1, parent2):
     for key in parent1:
         child[key] = random.choice([parent1[key], parent2[key]])
     return child
+
+def chromosome_signature(chromosome):
+    # 轉成 tuple，確保順序一致
+    return tuple(sorted(chromosome.items()))
+
+class FitnessCacheManager:
+    def __init__(self, filename="fitness_cache.txt"):
+        self.filename = filename
+        self.cache = self.load()
+
+    def load(self):
+        if not os.path.exists(self.filename):
+            return {}
+        with open(self.filename, "r") as f:
+            return {
+                line.split("\t")[0]: float(line.split("\t")[1])
+                for line in f if line.strip()
+            }
+
+    def save(self):
+        with open(self.filename, "w") as f:
+            for k, v in self.cache.items():
+                f.write(f"{k}\t{v:.6f}\n")
+
+    def update(self, key, value):
+        self.cache[key] = value
+        self.save()
 
 # 🔹 擴充 TrainState 以支援 BatchNorm
 class TrainState(train_state.TrainState):
@@ -185,7 +215,15 @@ def split_dataset(data, split_ratio=0.9):
     return data[:split_idx], data[split_idx:]
 
 # 🔹 適合度函數（GGA）
-def fitness(chromosome, rng):
+def fitness(chromosome, rng, dataset_name, optimizer):
+
+    signature = chromosome_signature(chromosome)
+
+    # ✅ 快取命中檢查
+    if signature in fitness_cache:
+        tqdm.write("⚡ 已訓練過此個體，直接回傳快取結果")
+        return fitness_cache[signature]
+    
     start_time = time.time()  # 開始計時
     tqdm.write("📊 開始評估")
     
@@ -201,27 +239,44 @@ def fitness(chromosome, rng):
     )
 
     batch_size = 128
-    num_epochs = 10
-    full_train_data = load_dataset(batch_size=batch_size, train=True)
+    num_epochs = 8
+    full_train_data = load_dataset(batch_size=batch_size, train=True, dataset_name=dataset_name)
     train_data, val_data = split_dataset(full_train_data, split_ratio=0.9)
     steps_per_epoch = len(train_data)
-    warmup_steps = 2 * steps_per_epoch
+    warmup_steps = 1.4 * steps_per_epoch
 
     state, _ = create_train_state(
-        rng, model,
+        rng,
+        model,
         learning_rate=chromosome["learning_rate"],
-        num_epochs=num_epochs,
-        steps_per_epoch=steps_per_epoch,
+        num_epochs=None,
+        steps_per_epoch=None,
         warmup_steps=warmup_steps,
-        weight_decay=5e-5
-    )
+        weight_decay=5e-5,
+        initial_period=500,
+        period_mult=2,
+        eta_min=0.00001,
+        optimizer=optimizer,
+        momentum=0.9
+        )
+    
+    # ✅ 預熱 JIT 編譯
+    compile_start = time.time()
+    dummy_imgs = jnp.ones((batch_size, 32, 32, 3), dtype=jnp.float32)
+    dummy_labels = jnp.zeros((batch_size,), dtype=jnp.int32)
+    mixed_imgs, y_a, y_b, lam = cutmix_data(np.array(dummy_imgs), np.array(dummy_labels))
+    _ = train_step(state, mixed_imgs, y_a, y_b, lam, dummy_labels)
+    compile_time = time.time() - compile_start
+    tqdm.write(f"🧪 JIT 編譯耗時: {compile_time:.2f} 秒")
 
+    # ✅ 正式訓練
     for epoch in range(num_epochs):
         for batch in tqdm(train_data, desc=f"Train Epoch {epoch+1}/{num_epochs}", leave=False):
             imgs, labels = batch
             mixed_imgs, y_a, y_b, lam = cutmix_data(np.array(imgs), np.array(labels))
             state, metrics = train_step(state, mixed_imgs, y_a, y_b, lam, labels)
 
+    # ✅ 驗證
     val_acc = 0
     for batch in tqdm(val_data, desc="Validating", leave=False):
         metrics = eval_step(state, batch)
@@ -234,26 +289,41 @@ def fitness(chromosome, rng):
     return val_acc / len(val_data), elapsed
 
 # 🔹 GGA 主流程
-def run_gga(pop_size=6, generations=5):
+def run_gga(pop_size=6, generations=5, dataset_name="cifar10", optimizer="adamw"):
     rng = jax.random.PRNGKey(42)
     population = [sample_chromosome() for _ in range(pop_size)]
 
     tqdm.write("🔧 預熱 JAX 編譯器...")
+    dummy_chromosome = sample_chromosome()
+    _ = fitness(dummy_chromosome, rng, dataset_name, optimizer)
+    tqdm.write("✅ 預熱完成，開始 GGA")
 
-    total_start_time = time.time()  # 整體開始計時
+    total_start_time = time.time()
+    cache_mgr = FitnessCacheManager()
+    fitness_cache = cache_mgr.cache
 
     for gen in range(generations):
         tqdm.write(f"\n📘 Generation {gen+1}\n")
 
         scores = []
         times = []
+
         for i, ind in enumerate(tqdm(population, desc=f"Evaluating Gen {gen+1}", leave=True)):
+            ind_id = str(ind)  # 用染色體 dict 的字串表示作為 key
             tqdm.write(f"🧬 個體 {i+1} 染色體參數：{ind}")
-            score, elapsed = fitness(ind, rng)
+
+            if ind_id in fitness_cache:
+                score = fitness_cache[ind_id]
+                elapsed = 0.0
+                tqdm.write(f"⚡ 已快取，準確率: {score:.4f}")
+            else:
+                score, elapsed = fitness(ind, rng, dataset_name, optimizer)
+                cache_mgr.update(ind_id, score)
+                tqdm.write(f"✅ 個體 {i+1} 驗證準確率: {score:.4f}")
+                tqdm.write(f"⏱ 訓練時間: {elapsed:.2f} 秒")
+
             scores.append(score)
             times.append(elapsed)
-            tqdm.write(f"✅ 個體 {i+1} 驗證準確率: {score:.4f}")
-            tqdm.write(f"⏱ 訓練時間: {elapsed:.2f} 秒")
             tqdm.write("--------------------------------------------------------------------------------------------------------------------------------------")
 
         sorted_pop = [x for _, x in sorted(zip(scores, population), key=lambda pair: pair[0], reverse=True)]
@@ -280,3 +350,116 @@ def run_gga(pop_size=6, generations=5):
     for k, v in best_chromosome.items():
         tqdm.write(f"{k}: {v}")
     return best_chromosome
+
+def train_with_config(config, num_epochs=10, batch_size=128, earlystop="n", dataset_name="cifar10", optimizer="adamw"):
+    rng = jax.random.PRNGKey(0)
+    start_time = time.time()
+
+    model = MlpMixer(
+        num_classes=10,
+        num_blocks=config["num_blocks"],
+        patch_size=config["patch_size"],
+        hidden_dim=config["hidden_dim"],
+        tokens_mlp_dim=config["tokens_mlp_dim"],
+        channels_mlp_dim=config["channels_mlp_dim"],
+        dropout_rate=config["dropout_rate"],
+        use_bn=config["use_bn"]
+    )
+
+    full_train_data = load_dataset(batch_size=batch_size, train=True, dataset_name=dataset_name)
+    train_data, val_data = split_dataset(full_train_data, split_ratio=0.9)
+    test_data = load_dataset(batch_size=batch_size, train=False, dataset_name=dataset_name)
+    
+    tqdm.write(f"📦 訓練資料筆數: {len(train_data)}")
+    steps_per_epoch = len(train_data) #cifar10:351
+    total_steps = num_epochs * steps_per_epoch
+    warmup_steps = 5 * steps_per_epoch
+    initial_period = 6 * steps_per_epoch
+    
+    schedule = cosine_annealing_with_restarts_schedule(
+        base_lr=config["learning_rate"],
+        warmup_steps=warmup_steps,
+        initial_period=initial_period,
+        period_mult=2,
+        eta_min=0.00001
+    )
+    
+    state, _ = create_train_state(
+        rng,
+        model,
+        learning_rate=config["learning_rate"],
+        num_epochs=None,
+        steps_per_epoch=None,
+        warmup_steps=warmup_steps,
+        weight_decay=5e-5,
+        initial_period=500,
+        period_mult=2,
+        eta_min=0.00001,
+        optimizer=optimizer,
+        momentum=0.9
+        )
+
+    train_accs, train_losses, val_accs, val_losses, lrs = [], [], [], [], []
+    early_stopping = EarlyStopping(patience=5, enabled=False)
+
+    print("🎬 訓練開始，計時開始")
+
+    for epoch in range(num_epochs):
+        epoch_train_loss, epoch_train_acc = 0, 0
+        batch_count = 0
+        epoch_start = time.time()
+
+        for batch_idx, batch in enumerate(train_data):
+            imgs, labels = batch
+            mixed_imgs, y_a, y_b, lam = cutmix_data(np.array(imgs), np.array(labels))
+            state, metrics = train_step(state, mixed_imgs, y_a, y_b, lam, labels)
+            current_step = epoch * steps_per_epoch + batch_idx
+            lr = float(schedule(current_step))
+            lrs.append(lr)
+
+            epoch_train_loss += float(metrics['loss'])
+            epoch_train_acc += float(metrics['accuracy'])
+            batch_count += 1
+
+            if epoch == 0 and batch_idx < 10:
+                print(f"Step {current_step+1}, LR: {lr:.6f}")
+
+        train_accs.append(epoch_train_acc / batch_count)
+        train_losses.append(epoch_train_loss / batch_count)
+
+        val_loss, val_acc = 0, 0
+        for batch in val_data:
+            metrics = eval_step(state, batch)
+            val_loss += float(metrics['loss'])
+            val_acc += float(metrics['accuracy'])
+        val_loss /= len(val_data)
+        val_acc /= len(val_data)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
+
+        print(f"Epoch {epoch+1} — Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accs[-1]:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, LR: {lr:.6f}")
+        print(f"Epoch {epoch+1} 耗時: {format_duration(time.time() - epoch_start)}, Train_Acc多: {(train_accs[-1] - val_acc):.4f}")
+
+        if earlystop == "y":
+            if early_stopping.should_stop(val_loss):
+                print(f"⛔ Early stopping triggered at epoch {epoch+1}")
+                break
+
+    acc_list = [
+    jnp.mean(jnp.argmax(model.apply({'params': state.params, 'batch_stats': state.batch_stats}, imgs, train=False), axis=-1) == labels)
+    for imgs, labels in test_data
+    ]
+    test_acc = jnp.mean(jnp.array(acc_list))
+    
+    print(f"\n✅ Final Test Accuracy: {test_acc:.4f}")
+    print(f"• 模型配置: \n"
+          f"num_blocks: {config['num_blocks']} \n"
+          f"patch_size: {config['patch_size']} \n"
+          f"hidden_dim: {config['hidden_dim']} \n"
+          f"tokens_mlp_dim: {config['tokens_mlp_dim']} \n"
+          f"channels_mlp_dim: {config['channels_mlp_dim']} \n"
+          f"dropout_rate: {config['dropout_rate']} \n"
+          f"use_bn: {config['use_bn']}")
+    print(f"總耗時: {format_duration(time.time() - start_time)}")
+
+    plot_all_metrics(train_accs, train_losses, val_accs, val_losses, lrs)

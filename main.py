@@ -7,6 +7,8 @@ from train import run_gga, train_with_config
 from model import MlpMixer
 import os
 import numpy as np
+import flax
+import pickle
 # 類別名稱
 dataset_name = "mnist"  # ✅ 可選 "cifar10" 或 "mnist"
 if dataset_name == "cifar10":
@@ -70,6 +72,10 @@ def main():
         variables = model.init(jax.random.PRNGKey(0), dummy_input, False)
         params = variables["params"]
         export_all_params_q88(params)
+        # 儲存 Flax 參數
+        with open("mlp_mixer_params.pkl", "wb") as f:
+            pickle.dump(params, f)
+        print("已儲存 Flax 訓練參數到 mlp_mixer_params.pkl")
         print(model.tabulate(
             jax.random.PRNGKey(0), 
             dummy_input, 

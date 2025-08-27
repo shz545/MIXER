@@ -1,23 +1,26 @@
 import numpy as np
-import tensorflow as tf
+import pickle
 from csd import graph_decompose
 
 # hyper-param：延遲約束
 dc = 2
 
-# 1. 載入訓練好的 MLP-Mixer
-model = tf.keras.models.load_model("mlp_mixer_model.h5")
+# 1. 載入訓練好的 MLP-Mixer（Flax 參數）
+with open("mlp_mixer_params.pkl", "rb") as f:
+    params = pickle.load(f)
+# params 是 Flax 權重 dict
 
-# 2. 找到所有要做 DA 的層
+# 2. 找到所有要做 DA 的層（以 'Dense' 為例，可依你的 model 結構調整）
 layers_to_decompose = []
-for layer in model.layers:
-    if isinstance(layer, tf.keras.layers.Dense) or "EinsumDense" in layer.__class__.__name__:
-        W, b = layer.get_weights()
+for module_name in params:
+    # 只處理有 kernel 權重的層（通常是 Dense）
+    if "kernel" in params[module_name]:
+        W = np.array(params[module_name]["kernel"])
+        b = np.array(params[module_name].get("bias", np.zeros(W.shape[1])))
         din, dout = W.shape
-        # 太小的層就略過
-        if max(din, dout) < 16:  
+        if max(din, dout) < 16:
             continue
-        layers_to_decompose.append((layer.name, W, b))
+        layers_to_decompose.append((module_name, W, b))
 
 # 3. 一層層跑 graph_decompose
 for name, W, b in layers_to_decompose:

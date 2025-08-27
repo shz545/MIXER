@@ -12,7 +12,7 @@ class MlpBlock(nn.Module):
         y = nn.Dense(self.mlp_dim)(x)
         if self.use_bn:
             y = nn.BatchNorm(use_running_average=not train)(y)
-        y = nn.gelu(y)
+        y = nn.relu(y)
         y = nn.Dropout(rate=self.dropout_rate)(y, deterministic=not train)
         y = nn.Dense(x.shape[-1])(y)
         if self.use_bn:

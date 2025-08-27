@@ -20,7 +20,7 @@ fitness_cache = {}
 # 🔹 染色體結構
 def sample_chromosome():
     return {
-        "num_blocks": random.choice([4,6,8,10,12]),
+        "num_blocks": random.choice([4,6,8]),
         "patch_size": random.choice([4, 8]),
         "hidden_dim": random.choice([16, 32, 64, 128, 256]),
         "tokens_mlp_dim": random.choice([32, 64, 128, 256, 512]),
@@ -155,7 +155,7 @@ def create_train_state(
         tx=tx,
         batch_stats=batch_stats
     ), schedule
-
+    
 # 🔹 單步訓練（加入 MixUp + BN 更新）
 @jax.jit
 def train_step(state, mixed_imgs, y_a, y_b, lam, labels, smoothing=0.1):
@@ -259,7 +259,7 @@ def fitness(chromosome, rng, dataset_name, optimizer):
         optimizer=optimizer,
         momentum=0.9
         )
-    
+   
     # ✅ 預熱 JIT 編譯
     compile_start = time.time()
     dummy_imgs = jnp.ones((batch_size, 32, 32, 3), dtype=jnp.float32)
@@ -275,7 +275,8 @@ def fitness(chromosome, rng, dataset_name, optimizer):
             imgs, labels = batch
             mixed_imgs, y_a, y_b, lam = cutmix_data(np.array(imgs), np.array(labels))
             state, metrics = train_step(state, mixed_imgs, y_a, y_b, lam, labels)
-
+            
+            
     # ✅ 驗證
     val_acc = 0
     for batch in tqdm(val_data, desc="Validating", leave=False):
@@ -373,7 +374,7 @@ def train_with_config(config, num_epochs=10, batch_size=128, earlystop="n", data
     tqdm.write(f"📦 訓練資料筆數: {len(train_data)}")
     steps_per_epoch = len(train_data) #cifar10:351
     total_steps = num_epochs * steps_per_epoch
-    warmup_steps = 5 * steps_per_epoch
+    warmup_steps = 2 * steps_per_epoch
     initial_period = 6 * steps_per_epoch
     
     schedule = cosine_annealing_with_restarts_schedule(

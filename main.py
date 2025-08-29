@@ -25,7 +25,7 @@ def save_param_to_mem(param, filename):
         for val in arr_q88:
             f.write(f"{np.uint16(val):04X}\n")
 
-def export_all_params_q88(params, folder="kernel", prefix=""):
+def export_all_params_q88(params, folder="orig_kernel", prefix=""):
     os.makedirs(folder, exist_ok=True)
     for k, v in params.items():
         if isinstance(v, dict):

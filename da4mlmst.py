@@ -1,10 +1,15 @@
 import sys
 import pickle
 import numpy as np
+import os
 
 sys.path.insert(0, "/home/shz545/da4ml/src")
 from da4ml.cmvm.util.mat_decompose import kernel_decompose
-
+'''
+進行da4ml的第一階段
+圖論分解 
+成功
+'''
 # 讀取 Flax 權重
 with open("mlp_mixer_params.pkl", "rb") as f:
     params = pickle.load(f)
@@ -38,12 +43,16 @@ W = np.round(np.array(kernel) * 256).astype(np.int16)
 # 執行 kernel_decompose
 result = kernel_decompose(W, dc=-2)
 
+# 確保 mst_kernel 資料夾存在
+out_dir = "mst_kernel"
+os.makedirs(out_dir, exist_ok=True)
+
 # result 可能是 tuple (M1, M2)
 if isinstance(result, tuple) and len(result) == 2:
     M1, M2 = result
     # 儲存分解後的 M1, M2 為 .mem
     for arr, tag in zip([M1, M2], ["M1", "M2"]):
-        mem_name = f"mst_{name.replace('/', '_')}_kernel_{tag}.mem"
+        mem_name = os.path.join(out_dir, f"mst_{name.replace('/', '_')}_kernel_{tag}.mem")
         with open(mem_name, "w") as f:
             for v in arr.flatten():
                 v_int = int(v)

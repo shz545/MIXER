@@ -5,3 +5,5 @@ __pycache__
 AutoAugment
 wandb
 data
+fitness_cache.txt
+*.mem

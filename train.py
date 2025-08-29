@@ -1,3 +1,6 @@
+import sys
+sys.path.insert(0, "/home/shz545/da4ml/src")
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,6 +17,8 @@ from dataset import load_dataset
 from utils import cutmix_data,format_duration,plot_all_metrics
 from tqdm import tqdm  # 放在檔案最上方
 from model import MlpMixer
+import pickle
+from da4ml.cmvm.core import cmvm, to_solution
 
 fitness_cache = {}
 
@@ -464,3 +469,12 @@ def train_with_config(config, num_epochs=10, batch_size=128, earlystop="n", data
     print(f"總耗時: {format_duration(time.time() - start_time)}")
 
     plot_all_metrics(train_accs, train_losses, val_accs, val_losses, lrs)
+
+    # 訓練結束後儲存 Flax 參數
+    params_to_save = {
+        "params": state.params,
+        "batch_stats": state.batch_stats
+    }
+    with open("mlp_mixer_params.pkl", "wb") as f:
+        pickle.dump(params_to_save, f)
+    print("✅ 已儲存訓練後模型參數到 mlp_mixer_params.pkl")

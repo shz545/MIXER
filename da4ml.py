@@ -168,19 +168,3 @@ print("\n=== 合併運算圖後的總資源消耗 ===")
 print(f"總加法器數量（cost）：{total_cost}")
 print(f"總延遲（latency）：{total_latency}")
 print(f"總運算步驟數量（ops）：{total_ops}")
-
-# 精度損失評估
-print("\n=== 精度損失評估 ===")
-W_ref = W
-W_rec = np.matmul(M1, M2)
-print(f"W_ref shape: {W_ref.shape}, W_rec shape: {W_rec.shape}")
-if W_ref.shape == W_rec.shape:
-    abs_err = np.abs(W_ref - W_rec)
-    max_err = np.max(abs_err)
-    mean_err = np.mean(abs_err)
-    rel_err = np.linalg.norm(W_ref - W_rec) / (np.linalg.norm(W_ref) + 1e-8)
-    print(f"最大絕對誤差：{max_err}")
-    print(f"平均絕對誤差：{mean_err:.4f}")
-    print(f"相對誤差（Frobenius norm）：{rel_err:.6f}")
-else:
-    print("分解後重建矩陣 shape 不同，無法直接比較精度損失。\n")

@@ -6,6 +6,10 @@ git commit -m "完成合併並解決衝突"
 git push origin main
 git push origin betterlmodel
 
+查看在哪個分支
+git remote -v
+git branch
+
 If you have a local clone, you can update it by running the following commands.
 git branch -m puddingouo-patch-1 '基礎架構'
 git fetch origin

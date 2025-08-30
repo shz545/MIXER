@@ -478,3 +478,6 @@ def train_with_config(config, num_epochs=10, batch_size=128, earlystop="n", data
     with open("mlp_mixer_params.pkl", "wb") as f:
         pickle.dump(params_to_save, f)
     print("✅ 已儲存訓練後模型參數到 mlp_mixer_params.pkl")
+
+    # 訓練結束
+    return state.params  # 或 return params

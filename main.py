@@ -40,24 +40,26 @@ def main():
     trainornot = "y" # ✅ 可選 "y" 或 "n"
     optimizer = "adamw" # ✅ 可選 "adamw" 或 "sgd"
     earlystop = "n" # ✅ 可選 "y" 或 "n"
-    num_epochs = 20
+    num_epochs = 30
     pop_size = 10
     generations = 10
     batch_size = 128
 
     if mode == "train":
         default_config = {
-            "num_blocks": 3,
+            "num_blocks": 2,
             "patch_size": 4,
-            "hidden_dim": 128,
-            "tokens_mlp_dim": 64,
-            "channels_mlp_dim": 512,
+            "hidden_dim": 32,
+            "tokens_mlp_dim": 32,
+            "channels_mlp_dim": 64,
             "dropout_rate": 0.1,
-            "learning_rate": 0.001,
+            "learning_rate": 0.003,
             "use_bn": False
         }
         
-        train_with_config(default_config, num_epochs=num_epochs, batch_size=batch_size, earlystop=earlystop, dataset_name=dataset_name, optimizer=optimizer)
+        # 執行訓練
+        params = train_with_config(default_config, num_epochs=num_epochs, batch_size=batch_size, earlystop=earlystop, dataset_name=dataset_name, optimizer=optimizer)
+        export_all_params_q88(params)
         
         model = MlpMixer(
             num_classes=10,

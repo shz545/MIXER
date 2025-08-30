@@ -9,8 +9,6 @@ from da4ml.cmvm.core import cmvm, to_solution
 from da4ml.cmvm.api import solve
 '''
 合併da4ml的所有階段
-但沒有cse的函式
-所以用cmvm()當替代方案
 目前發現沒有把加法器使用率降下來
 '''
 # 顯示完整矩陣

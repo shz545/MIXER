@@ -6,4 +6,3 @@ AutoAugment
 wandb
 data
 fitness_cache.txt
-*.mem

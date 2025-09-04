@@ -10,7 +10,7 @@ def preprocess(image, label):
 
 def preprocess_mnist(image, label):
     image = tf.image.resize(image, [32, 32])
-    image = tf.image.grayscale_to_rgb(image)
+    # 不要轉成 RGB，直接保留灰階
     image = tf.cast(image, tf.float32) / 255.0
     return image, tf.squeeze(label)
 

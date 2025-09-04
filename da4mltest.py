@@ -2,6 +2,7 @@ import sys
 import os
 import pickle
 import numpy as np
+import matplotlib.pyplot as plt
 
 sys.path.insert(0, "/home/shz545/da4ml/src")
 from da4ml.cmvm.util.mat_decompose import kernel_decompose, prim_mst_dc
@@ -157,9 +158,8 @@ print(f"分解後乘法器數量（M1+M2 非零元素）：{np.count_nonzero(M1)
 # 2. 第一階段分解後的 dense 加法器數量（理論值）
 m1_adders = M1.shape[0] * (M1.shape[1] - 1)
 m2_adders = M2.shape[0] * (M2.shape[1] - 1)
-print(f"分解前 dense 加法器數量：{shape[0] * (shape[1] - 1)}")
-print(f"第一階段分解後 dense 加法器數量（理論值）：{m1_adders} + {m2_adders} = {m1_adders + m2_adders}")
-
+print(f"分解前加法器數量：{shape[0] * (shape[1] - 1)}")
+print(f"第一階段分解後加法器數量（理論值）：{m1_adders} + {m2_adders} = {m1_adders + m2_adders}")
 # 3. 節省比例
 dense_adders = shape[0] * (shape[1] - 1)
 decompose_cost = m1_adders + m2_adders
@@ -187,12 +187,12 @@ for mat, tag in zip([M1, M2], ["M1", "M2"]):
     dense_adders = shape[0] * (shape[1] - 1)
     if cse_method == "2":
         print(f"\n<<<<<<<<<<<<<<< 執行 cmvm 第二階段 CSE 分解 >>>>>>>>>>>>>>>\n")
-        state = cmvm(mat, method='wmc')
+        state = cmvm(mat, method='mc')
         solution = to_solution(state, adder_size=-1, carry_size=-1)
         method_used = "cmvm"
     else:
         print(f"\n<<<<<<<<<<<<<<< 執行 solve 第二階段 CSE 分解 >>>>>>>>>>>>>>>\n")
-        solution = solve(mat)
+        solution = solve(mat, method0='mc-dc')
         method_used = "solve"
     solutions.append(solution)
     cost = solution.cost
@@ -218,6 +218,7 @@ for mat, tag in zip([M1, M2], ["M1", "M2"]):
     print(f"CSE 完的 kernel 稀疏度（0 的比例）：{kernel_sparsity:.4f}，非零元素數量：{kernel_nonzero}/{kernel_total}")
     out_name = os.path.join(cse_dir, f"{method_name}_{name.replace('/', '_')}_{tag}_{method_used}.mem")
     save_mem(solution.kernel, out_name)
+    print("CSE 前後 kernel 是否完全相同：", np.array_equal(mat, solution.kernel))
 
 # 合併運算圖與資源分析
 solution1, solution2 = solutions
@@ -256,7 +257,14 @@ print(f"CSE 後 M2 矩陣的所有元素平均值：{m2_mean:.4f}")
 # 新增：合併第二階段完的兩個矩陣，並顯示新權重矩陣的數值與稀疏度
 print("\n=== 合併後的新權重矩陣 ===")
 merged_kernel = np.matmul(solution1.kernel, solution2.kernel)
-print("合併前的權重矩陣：\n", W)
 print("合併後的新權重矩陣 shape:", merged_kernel.shape)
-print("合併後的權重矩陣：\n", merged_kernel)
-print("CSE 後 M1 矩陣內容：\n", solution1.kernel)
+cse_reconstructed = np.matmul(solution1.kernel, solution2.kernel)
+cse_diff_norm = np.linalg.norm(W - cse_reconstructed)
+print(f"CSE 合併後還原誤差（Frobenius norm）：{cse_diff_norm:.4f}")
+print("CSE 合併後是否完全還原：", np.allclose(W, cse_reconstructed))
+
+print(f"原始 W：max={W.max()}, min={W.min()}, std={W.std():.2f}")
+print(f"M1：max={M1.max()}, min={M1.min()}, std={M1.std():.2f}")
+print(f"M2：max={M2.max()}, min={M2.min()}, std={M2.std():.2f}")
+print(f"CSE後 M1：max={solution1.kernel.max()}, min={solution1.kernel.min()}, std={solution1.kernel.std():.2f}")
+print(f"CSE後 M2：max={solution2.kernel.max()}, min={solution2.kernel.min()}, std={solution2.kernel.std():.2f}")

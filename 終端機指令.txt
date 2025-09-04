@@ -10,6 +10,8 @@ git push origin betterlmodel
 git remote -v
 git branch
 
+git clone --branch vivado_da4ml https://github.com/puddingouo/gMLP.git
+
 If you have a local clone, you can update it by running the following commands.
 git branch -m puddingouo-patch-1 '基礎架構'
 git fetch origin

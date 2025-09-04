@@ -52,8 +52,9 @@ class MlpMixer(nn.Module):
     use_bn: bool = False
 
     @nn.compact
-    def __call__(self, x, train: bool):
+    def __call__(self, x, train: bool = False):
         s = self.patch_size
+        # 指定 input_channels
         x = nn.Conv(self.hidden_dim, (s, s), strides=(s, s), name='stem')(x)
         if self.use_bn:
             x = nn.BatchNorm(use_running_average=not train)(x)

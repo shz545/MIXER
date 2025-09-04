@@ -21,12 +21,11 @@ else:
     # 這時要重啟程式才會生效
     
 def save_param_to_mem(param: np.ndarray, filename: str) -> None:
-    """將參數存成 .mem 檔（Q8.8 格式）"""
-    arr = np.array(param)
-    arr_q88 = np.round(arr * 256).astype(np.int16).flatten()
+    """將參數存成 .mem 檔（浮點數格式）"""
+    arr = np.array(param).flatten()
     with open(filename, "w") as f:
-        for val in arr_q88:
-            f.write(f"{np.uint16(val):04X}\n")
+        for val in arr:
+            f.write(f"{val:.32f}\n")  # 32位小數，可依需求調整
 
 def export_all_params_q88(params, folder="orig_kernel", prefix=""):
     os.makedirs(folder, exist_ok=True)
